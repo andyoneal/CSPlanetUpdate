@@ -132,9 +132,9 @@ namespace CSPlanetUpdate
                 PlanetData planet = star.planets[planetId];
 
                 planetData[i].orbitalPeriod = (float)planet.orbitalPeriod;
-                planetData[i].orbitPhase = planet.orbitPhase;
+                planetData[i].orbitPhase = (float)(planet.orbitPhase / 360.0);
                 planetData[i].rotationPeriod = (float)planet.rotationPeriod;
-                planetData[i].rotationPhase = planet.rotationPhase;
+                planetData[i].rotationPhase = (float)(planet.rotationPhase / 360.0);
                 planetData[i].runtimeOrbitRotation = new Vector4(planet.runtimeOrbitRotation.x, planet.runtimeOrbitRotation.y, planet.runtimeOrbitRotation.z, planet.runtimeOrbitRotation.w);
                 planetData[i].orbitRadius = planet.orbitRadius;
                 planetData[i].runtimeSystemRotation = new Vector4(planet.runtimeSystemRotation.x, planet.runtimeSystemRotation.y, planet.runtimeSystemRotation.z, planet.runtimeSystemRotation.w);
