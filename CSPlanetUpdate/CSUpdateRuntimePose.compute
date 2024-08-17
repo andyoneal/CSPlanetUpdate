@@ -1,0 +1,109 @@
+#pragma kernel CSMain
+
+#define UNITY_PI 3.1415926536
+
+#pragma enable_d3d11_debug_symbols
+
+struct csPlanetData {
+    float orbitalPeriod; // double!
+    float orbitPhase; // orbitPhase / 360.0
+    float rotationPeriod; // double!
+    float rotationPhase; // rotationPhase / 360.0
+    float4 runtimeOrbitRotation; // quat
+    float orbitRadius;
+    float4 runtimeSystemRotation; // quat
+    int orbitAroundPlanet; // can be null?
+}; //size = 56
+
+struct csPosData {
+    float runtimeOrbitPhase;
+    float3 runtimePosition; // double!
+    float4 runtimeRotation; //quat
+    float3 runtimeLocalSunDirection;
+}; //size = 44
+
+StructuredBuffer<csPlanetData> _PlanetBuffer;
+RWStructuredBuffer<csPosData> _PosBuffer;
+
+float _Time; // double!
+uint _NumPlanets;
+
+float4 qmul(float4 q1, float4 q2)
+{
+    return float4(
+            q2.xyz * q1.w + q1.xyz * q2.w + cross(q1.xyz, q2.xyz),
+            q1.w * q2.w - dot(q1.xyz, q2.xyz)
+        );
+}
+
+float3 QRotateLF(float4 r, float3 v)
+{
+    float4 r_c = r * float4(-1, -1, -1, 1);
+    return qmul(r, qmul(float4(v, 0), r_c)).xyz;
+}
+
+float4 AngleAxis(float angle, float3 axis)
+{
+    float sn = sin(angle * 0.5);
+    float cs = cos(angle * 0.5);
+    return float4(axis * sn, cs);
+}
+
+float4 q_conj(float4 q)
+{
+    return float4(-q.x, -q.y, -q.z, q.w);
+}
+
+float4 q_inverse(float4 q)
+{
+    float4 conj = q_conj(q);
+    return conj / (q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w);
+}
+
+float3 QInvRotate(float4 q, float3 v)
+{
+    return QRotateLF(q_inverse(q), v);
+};
+
+[numthreads(32, 2, 1)]
+void CSMain(in uint3 _dispatchThreadID : SV_DispatchThreadID) {
+    uint planetID = _dispatchThreadID.x;
+    planetID = planetID - _dispatchThreadID.y * _NumPlanets;
+    
+    if(planetID == 0)
+        return;
+
+    uint posID = _dispatchThreadID.x;
+    
+    bool isNext = _dispatchThreadID.y > 0;
+    float time = isNext ? _Time + (1.0 / 60.0) : _Time;
+    
+    float num = time / _PlanetBuffer[planetID].orbitalPeriod + _PlanetBuffer[planetID].orbitPhase; // double!
+    int num2 = (int)(num + 0.1);
+    num = num - num2;
+    _PosBuffer[posID].runtimeOrbitPhase = num * 360.0;
+    num = num * UNITY_PI * 2.0;
+    
+    float num3 = time / _PlanetBuffer[planetID].rotationPeriod + _PlanetBuffer[planetID].rotationPhase; // double!
+    int num4 = (int)(num3 + 0.1);
+    float runtimeRotationPhase = (num3 - num4) * 360.0; // double!
+    float orbitRadius = _PlanetBuffer[planetID].orbitRadius;
+    float3 runtimePos = float3(cos(num) * orbitRadius, 0, sin(num) * orbitRadius); // double!
+    runtimePos = QRotateLF(_PlanetBuffer[planetID].runtimeOrbitRotation, runtimePos); // double!
+    
+    _PosBuffer[posID].runtimePosition = runtimePos;
+
+    float4 runtimeRotation = qmul(_PlanetBuffer[planetID].runtimeSystemRotation, AngleAxis(runtimeRotationPhase, float3(0, -1, 0)));
+    _PosBuffer[posID].runtimeRotation = runtimeRotation;
+
+    GroupMemoryBarrierWithGroupSync();
+    
+    int orbitAroundPlanetID = _PlanetBuffer[planetID].orbitAroundPlanet + _dispatchThreadID.y * _NumPlanets;
+    float3 orbitAroundPos = _PosBuffer[orbitAroundPlanetID].runtimePosition;
+    runtimePos = runtimePos + orbitAroundPos;
+    _PosBuffer[posID].runtimePosition = runtimePos;
+    
+    if(!isNext) {
+        _PosBuffer[posID].runtimeLocalSunDirection = QInvRotate(runtimeRotation, -runtimePos);
+    }
+}
