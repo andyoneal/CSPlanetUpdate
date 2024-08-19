@@ -31,6 +31,7 @@ namespace CSPlanetUpdate
         private static csPosData[] posData;
         private static int NUM_PLANETS;
         private static readonly int Time1 = Shader.PropertyToID("_Time");
+        private static bool isReady;
 
 
         private void Awake()
@@ -42,9 +43,16 @@ namespace CSPlanetUpdate
             bundle = AssetBundle.LoadFromFile(path);
             
             NUM_PLANETS = 1 + MAX_STARS * MAX_PLANETS_PER_STAR;
+            logger.LogDebug($"NUM_PLANETS = {NUM_PLANETS}");
+            
             runtimePoseShader = bundle?.LoadAsset<ComputeShader>("CSUpdateRuntimePose");
+            if(runtimePoseShader == null)
+                logger.LogError("Couldn't find shader CSUpdateRuntimePose");
+            
             poseCSKernelId = runtimePoseShader.FindKernel("CSMain");
             runtimePoseShader.GetKernelThreadGroupSizes(poseCSKernelId, out poseCSThreads, out _, out _);
+            logger.LogDebug($"poseCSThreads = {poseCSThreads}");
+            
             runtimePoseShader.SetInt("_NumPlanets", NUM_PLANETS);
 
             Harmony.CreateAndPatchAll(typeof(CSPlanetUpdate));
@@ -54,8 +62,11 @@ namespace CSPlanetUpdate
         [HarmonyPrefix]
         public static bool GalaxyData_UpdatePoses_Prefix(GalaxyData __instance, double time)
         {
+            if (isReady == false)
+                ShaderSetup(__instance);
+            
             runtimePoseShader.SetFloat(Time1, (float)time);
-            runtimePoseShader.Dispatch(poseCSKernelId, Mathf.Max(1, Mathf.CeilToInt(NUM_PLANETS / (float)poseCSThreads)), 2, 1);
+            runtimePoseShader.Dispatch(poseCSKernelId, Mathf.Max(1, Mathf.CeilToInt(NUM_PLANETS / (float)poseCSThreads)), 1, 1);
             posBuffer.GetData(posData);
 
             for(int i = 1; i < NUM_PLANETS; i++)
@@ -110,27 +121,67 @@ namespace CSPlanetUpdate
                 __instance.astrosData[id].uPosNext = planet.uPositionNext;
                 __instance.astrosData[id].uRotNext = planet.runtimeRotationNext;
             }
+            /*
+            PlanetData lp = GameMain.localPlanet;
+            if (lp != null)
+            {
+                logger.LogDebug($"[CS] runtimeOrbitPhase: {lp.runtimeOrbitPhase}");
+                logger.LogDebug($"[CS] runtimePosition: {lp.runtimePosition}");
+                logger.LogDebug($"[CS] runtimeRotation: {lp.runtimeRotation}");
+                logger.LogDebug($"[CS] runtimeLocalSunDirection: {lp.runtimeLocalSunDirection}");
+            }
             
+            return true;
+            */
+
             return false;
         }
+        
+        /*
+        [HarmonyPatch(typeof(GalaxyData), nameof(GalaxyData.UpdatePoses))]
+        [HarmonyPostfix]
+        public static void GalaxyData_UpdatePoses_Postfix(GalaxyData __instance, double time)
+        {
+            PlanetData lp = GameMain.localPlanet;
+            if (lp != null)
+            {
+                logger.LogDebug($"[Vanilla] runtimeOrbitPhase: {lp.runtimeOrbitPhase}");
+                logger.LogDebug($"[Vanilla] runtimePosition: {lp.runtimePosition}");
+                logger.LogDebug($"[Vanilla] runtimeRotation: {lp.runtimeRotation}");
+                logger.LogDebug($"[Vanilla] runtimeLocalSunDirection: {lp.runtimeLocalSunDirection}");
+            }
+        }
+        */
 
         [HarmonyPatch(typeof(UniverseGen), nameof(UniverseGen.CreateGalaxy))]
-        [HarmonyPostfix]
-        public static void UniverseGen_CreateGalaxy_Postfix(ref GalaxyData __result)
+        [HarmonyPrefix]
+        public static bool UniverseGen_CreateGalaxy_Prefix(GameDesc gameDesc)
         {
+            isReady = false;
+
+            return true;
+        }
+
+        public static void ShaderSetup(GalaxyData galaxy)
+        {
+            logger.LogDebug("Setting up planet data for compute shader.");
+
+            Dictionary<int, int> idMap = new Dictionary<int, int>(); 
+            
             planetData = new csPlanetData[NUM_PLANETS];
             for (int i = 1; i < NUM_PLANETS; i++)
             {
                 int starId = (i - 1) / MAX_PLANETS_PER_STAR;
-                if (starId >= __result.starCount)
+                if (starId >= galaxy.starCount)
                     break;
-                StarData star = __result.stars[starId];
+                StarData star = galaxy.stars[starId];
                 int planetId = (i - 1) % MAX_PLANETS_PER_STAR;
                 if (planetId >= star.planetCount)
                     continue;
 
                 PlanetData planet = star.planets[planetId];
-
+                idMap.Add(planet.id, i);
+                
                 planetData[i].orbitalPeriod = (float)planet.orbitalPeriod;
                 planetData[i].orbitPhase = (float)(planet.orbitPhase / 360.0);
                 planetData[i].rotationPeriod = (float)planet.rotationPeriod;
@@ -138,20 +189,20 @@ namespace CSPlanetUpdate
                 planetData[i].runtimeOrbitRotation = new Vector4(planet.runtimeOrbitRotation.x, planet.runtimeOrbitRotation.y, planet.runtimeOrbitRotation.z, planet.runtimeOrbitRotation.w);
                 planetData[i].orbitRadius = planet.orbitRadius;
                 planetData[i].runtimeSystemRotation = new Vector4(planet.runtimeSystemRotation.x, planet.runtimeSystemRotation.y, planet.runtimeSystemRotation.z, planet.runtimeSystemRotation.w);
-                planetData[i].orbitAroundPlanet = planet.orbitAroundPlanet.id; // wrong
+                planetData[i].orbitAroundPlanet = planet.orbitAroundPlanet != null ? idMap.TryGetValue(planet.orbitAroundPlanet.id, out var orbitAroundPlanetId) ? orbitAroundPlanetId : 0 : 0;
             }
-
+            
             planetBuffer?.Release();
             planetBuffer = new ComputeBuffer(NUM_PLANETS, 56);
             runtimePoseShader.SetBuffer(poseCSKernelId,"_PlanetBuffer", planetBuffer);
             planetBuffer.SetData(planetData);
-
-
+            
             posData = new csPosData[NUM_PLANETS * 2];
             posBuffer?.Release();
             posBuffer = new ComputeBuffer(NUM_PLANETS * 2, 44);
             runtimePoseShader.SetBuffer(poseCSKernelId, "_PosBuffer", posBuffer);
+
+            isReady = true;
         }
-        
     }
 }
